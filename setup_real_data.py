@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Setup script to help configure the system for your real data
+日本語データのセットアップスクリプト
 """
 
 import os
@@ -9,36 +9,36 @@ from pathlib import Path
 
 def setup_real_data():
     """
-    Setup instructions for using your real Excel data
+    実際のExcelデータを使用するためのセットアップ手順
     """
-    print("🚀 AI Payment Risk Scoring - Real Data Setup")
+    print("🚀 AI支払いリスク評価 - 実データセットアップ")
     print("=" * 50)
     
     base_dir = Path(__file__).parent
     data_dir = base_dir / "data" / "raw"
     
-    print(f"📁 Data directory: {data_dir}")
+    print(f"📁 データディレクトリ: {data_dir}")
     
-    # Check if data directory exists
+    # データディレクトリの存在確認
     if not data_dir.exists():
         data_dir.mkdir(parents=True, exist_ok=True)
-        print("✅ Created data directory")
+        print("✅ データディレクトリを作成しました")
     
-    # Look for Excel files
+    # Excelファイルの検索
     excel_files = list(data_dir.glob("*.xlsx")) + list(data_dir.glob("*.xls"))
     
     if excel_files:
-        print(f"📊 Found Excel files:")
+        print(f"📊 Excelファイルが見つかりました:")
         for file in excel_files:
             print(f"   - {file.name}")
         
-        print("\n✅ Excel files detected! The system will automatically use your data.")
+        print("\n✅ Excelファイルを検出しました！システムは自動的にデータを使用します。")
         
     else:
-        print("❌ No Excel files found in the data directory.")
-        print("\n📋 To use your real data:")
-        print(f"1. Copy your Excel file to: {data_dir}")
-        print("2. Make sure it contains these columns:")
+        print("❌ データディレクトリにExcelファイルが見つかりません。")
+        print("\n📋 実データを使用するには:")
+        print(f"1. Excelファイルをこのディレクトリにコピーしてください: {data_dir}")
+        print("2. 以下の列が含まれていることを確認してください:")
         
         expected_columns = [
             "未払FLAG", "レコード番号", "成約日date", "開始タイムスタンプjst", 
@@ -55,17 +55,17 @@ def setup_real_data():
         for i, col in enumerate(expected_columns, 1):
             print(f"   {i:2d}. {col}")
         
-        print(f"\n3. Run the system: py src/main.py")
+        print(f"\n3. システムを実行: py src/main.py")
     
-    print("\n🔧 Configuration:")
-    print("- Target column: 未払FLAG (payment flag)")
-    print("- Customer ID: レコード番号 (record number)")
-    print("- Features: All agent and customer interaction metrics")
+    print("\n🔧 設定:")
+    print("- 対象列: 未払FLAG (支払いフラグ)")
+    print("- 顧客ID: レコード番号 (レコード番号)")
+    print("- 特徴量: すべてのエージェントと顧客のインタラクション指標")
     
-    print("\n💡 Tips:")
-    print("- The system will automatically aggregate multiple calls per customer")
-    print("- Missing values will be handled automatically")
-    print("- Features will be engineered from your call interaction data")
+    print("\n💡 ヒント:")
+    print("- システムは顧客ごとの複数の通話を自動的に集計します")
+    print("- 欠損値は自動的に処理されます")
+    print("- 特徴量は通話インタラクションデータから生成されます")
     
     return len(excel_files) > 0
 
@@ -73,7 +73,7 @@ if __name__ == "__main__":
     has_data = setup_real_data()
     
     if has_data:
-        print("\n🎉 Ready to run with your real data!")
-        print("Next step: py src/main.py")
+        print("\n🎉 実データで実行する準備ができました！")
+        print("次のステップ: py src/main.py")
     else:
-        print("\n⚠️  Please add your Excel file first, then run this script again.")
+        print("\n⚠️ まずExcelファイルを追加してから、このスクリプトを再実行してください。")
