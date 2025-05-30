@@ -537,6 +537,43 @@ class DataPreparator:
         
         return customer_df
 
+    def engineer_features_japanese(self, df):
+        """
+        日本語の顧客データに対する特徴量エンジニアリング
+        """
+        print("🔧 日本語データ用の特徴エンジニアリングを実行中...")
+        
+        # 基本的な特徴量の作成
+        engineered_df = df.copy()
+        
+        # エージェントと顧客の通話時間比率
+        if 'agent_talktime' in df.columns and 'customer_talktime' in df.columns:
+            engineered_df['agent_customer_talktime_ratio'] = df['agent_talktime'] / df['customer_talktime'].replace(0, 0.001)
+        
+        # 感情スコアの差異
+        if 'agent_sentiment_score' in df.columns and 'customer_sentiment_score' in df.columns:
+            engineered_df['sentiment_difference'] = df['agent_sentiment_score'] - df['customer_sentiment_score']
+            engineered_df['avg_sentiment'] = (df['agent_sentiment_score'] + df['customer_sentiment_score']) / 2
+        
+        # 文の合計と比率
+        if 'agent_total_sentence' in df.columns and 'customer_total_sentence' in df.columns:
+            engineered_df['total_sentences'] = df['agent_total_sentence'] + df['customer_total_sentence']
+            engineered_df['agent_sentence_ratio'] = df['agent_total_sentence'] / engineered_df['total_sentences'].replace(0, 1)
+        
+        # 無音時間の比率
+        if 'total_conversation_duration' in df.columns and 'total_talktime' in df.columns:
+            engineered_df['silence_ratio'] = 1 - (df['total_talktime'] / df['total_conversation_duration'].replace(0, 1))
+        
+        # ポジティブな文の比率
+        if 'agent_positive_sentence' in df.columns and 'agent_total_sentence' in df.columns:
+            engineered_df['agent_positivity_ratio'] = df['agent_positive_sentence'] / df['agent_total_sentence'].replace(0, 1)
+        
+        if 'customer_positive_sentence' in df.columns and 'customer_total_sentence' in df.columns:
+            engineered_df['customer_positivity_ratio'] = df['customer_positive_sentence'] / df['customer_total_sentence'].replace(0, 1)
+        
+        print(f"✅ 特徴エンジニアリング完了。生成された特徴量: {len(engineered_df.columns)}")
+        return engineered_df
+
 
 # Legacy functions for backward compatibility
 def load_data(file_path):

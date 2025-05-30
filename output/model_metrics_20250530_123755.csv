@@ -1,0 +1,11 @@
+accuracy,roc_auc,confusion_matrix,classification_report,cv_scores,cv_mean,cv_std
+0.8235294117647058,0.44791666666666663,"[[55  1]
+ [11  1]]","              precision    recall  f1-score   support
+
+  No Default       0.83      0.98      0.90        56
+     Default       0.50      0.08      0.14        12
+
+    accuracy                           0.82        68
+   macro avg       0.67      0.53      0.52        68
+weighted avg       0.77      0.82      0.77        68
+",[0.66666667 0.75757576 0.78787879 0.81818182 0.5       ],0.706060606060606,0.11483209285755401

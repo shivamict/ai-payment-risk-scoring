@@ -1,30 +1,23 @@
-#!/usr/bin/env python3
-"""
-Model Performance Optimization Script
-
-This script implements various techniques to improve the XGBoost model performance,
-particularly focusing on addressing the low ROC AUC score.
-"""
-
-import sys
-import logging
-from pathlib import Path
-
-# Add src directory to path
-sys.path.append(str(Path(__file__).parent / "src"))
-
+﻿import logging
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import GridSearchCV, StratifiedKFold
-from sklearn.preprocessing import StandardScaler
-from sklearn.feature_selection import SelectKBest, f_classif
+from pathlib import Path
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import classification_report, roc_auc_score
-import xgboost as xgb
+from sklearn.model_selection import train_test_split, cross_val_score, GridSearchCV
+from sklearn.metrics import roc_auc_score, confusion_matrix, classification_report
+from sklearn.feature_selection import SelectFromModel
 from imblearn.over_sampling import SMOTE
+import xgboost as xgb
+import matplotlib.pyplot as plt
+import seaborn as sns
+import sys
+import os
+from datetime import datetime
 
-from data_preparation import DataPreparator
-import config
+# Add the src directory to the path
+sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
+
+from src.data_preparation import DataPreparator
 
 # Configure logging
 logging.basicConfig(
@@ -34,312 +27,525 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class ModelOptimizer:
-    """Enhanced model training with optimization techniques."""
+    """最適化されたAIリスクスコアリングモデルを作成するクラス"""
     
     def __init__(self):
+        """モデルオプティマイザーの初期化"""
         self.data_prep = DataPreparator()
         self.best_model = None
-        self.best_score = 0
-        self.optimization_results = {}
+        self.feature_importances = None
+        self.best_params = None
+        self.baseline_auc = None
+        self.optimized_auc = None
+        self.selected_features = None
     
     def load_and_prepare_data(self):
-        """Load and prepare data for optimization."""
-        logger.info("🔄 Loading data for optimization...")
+        """Load and prepare Japanese data for optimization."""
+        logger.info("🔄 日本語データの読み込みと準備中...")
         
-        # Use the existing data preparation pipeline
-        self.data_prep.run_full_pipeline()
-        X, y = self.data_prep.prepare_ml_data()
+        # Check if processed data exists
+        processed_data_path = Path("outputs/processed_japanese_data.csv")
         
-        logger.info(f"📊 Dataset shape: {X.shape}")
-        logger.info(f"🎯 Target distribution: {dict(pd.Series(y).value_counts())}")
+        if processed_data_path.exists():
+            logger.info(f"✅ 処理済みデータを読み込み中: {processed_data_path}")
+            data = pd.read_csv(processed_data_path)
+            
+            # Check if the target column exists
+            if '未払FLAG' not in data.columns:
+                logger.error("❌ エラー: '未払FLAG'列が見つかりません。")
+                raise ValueError("Target column '未払FLAG' not found in processed data")
+            
+            # Prepare features and target
+            y_raw = data['未払FLAG']
+            
+            # Convert string labels to numeric (0 for '支払済', 1 for '未払')
+            y = y_raw.map(lambda x: 1 if x == '未払' else 0)
+            logger.info(f"✅ ラベルを数値に変換: '支払済' → 0, '未払' → 1")
+            
+            X = data.drop(['未払FLAG', 'レコード番号'], axis=1, errors='ignore')
+            
+            # Convert all columns to numeric, errors to NaN
+            for col in X.columns:
+                X[col] = pd.to_numeric(X[col], errors='coerce')
+            
+            # Fill any missing values
+            X = X.fillna(X.mean())
+            
+            logger.info(f"📊 データセットの形状: {X.shape}")
+            logger.info(f"🎯 ターゲット分布: {dict(pd.Series(y).value_counts())}")
+            
+            return X, y
         
-        return X, y
+        else:
+            # Try to find raw data
+            excel_files = list(Path("data/raw").glob("*.xlsx"))
+            
+            if not excel_files:
+                logger.error("❌ データが見つかりません。処理済みCSVまたは生のExcelファイルが必要です。")
+                raise FileNotFoundError("No data found. Please upload data first.")
+            
+            # Process the first Excel file found
+            logger.info(f"📊 Excelファイルを処理中: {excel_files[0]}")
+            
+            # Read Excel file
+            data = pd.read_excel(excel_files[0])
+            
+            # Check if the target column exists
+            if '未払FLAG' not in data.columns:
+                logger.error("❌ エラー: '未払FLAG'列が見つかりません。")
+                raise ValueError("Target column '未払FLAG' not found in Excel data")
+            
+            # Process data using DataPreparator
+            if hasattr(self.data_prep, 'engineer_features_japanese'):
+                processed_data = self.data_prep.engineer_features_japanese(data)
+            else:
+                processed_data = self.data_prep.engineer_features_real_data(data)
+            
+            # Save processed data
+            processed_data.to_csv("outputs/processed_japanese_data.csv", index=False)
+            
+            # Prepare features and target
+            y_raw = processed_data['未払FLAG']
+            
+            # Convert string labels to numeric (0 for '支払済', 1 for '未払')
+            y = y_raw.map(lambda x: 1 if x == '未払' else 0)
+            logger.info(f"✅ ラベルを数値に変換: '支払済' → 0, '未払' → 1")
+            
+            X = processed_data.drop(['未払FLAG', 'レコード番号'], axis=1, errors='ignore')
+            
+            # Convert all columns to numeric, errors to NaN
+            for col in X.columns:
+                X[col] = pd.to_numeric(X[col], errors='coerce')
+            
+            # Fill any missing values
+            X = X.fillna(X.mean())
+            
+            logger.info(f"📊 データセットの形状: {X.shape}")
+            logger.info(f"🎯 ターゲット分布: {dict(pd.Series(y).value_counts())}")
+            
+            return X, y
     
-    def apply_smote_balancing(self, X, y):
-        """Apply SMOTE to balance the dataset."""
-        logger.info("⚖️ Applying SMOTE balancing...")
+    def evaluate_baseline_model(self, X, y):
+        """ベースラインモデルの評価"""
+        logger.info(" ベースラインモデルの評価...")
         
-        smote = SMOTE(random_state=42, k_neighbors=3)
-        X_balanced, y_balanced = smote.fit_resample(X, y)
+        # Split data
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.2, random_state=42, stratify=y
+        )
         
-        logger.info(f"📊 Original shape: {X.shape}")
-        logger.info(f"📊 Balanced shape: {X_balanced.shape}")
-        logger.info(f"🎯 New target distribution: {dict(pd.Series(y_balanced).value_counts())}")
+        # Train a simple Random Forest as baseline
+        rf = RandomForestClassifier(n_estimators=100, random_state=42)
+        rf.fit(X_train, y_train)
         
-        return X_balanced, y_balanced
+        # Evaluate
+        y_pred_proba = rf.predict_proba(X_test)[:, 1]
+        auc = roc_auc_score(y_test, y_pred_proba)
+        
+        logger.info(f" ベースラインAUC: {auc:.4f}")
+        self.baseline_auc = auc
+        
+        return rf, auc
     
-    def feature_selection(self, X, y, k=15):
-        """Select top k features using statistical methods."""
-        logger.info(f"🎯 Selecting top {k} features...")
+    def select_features(self, X, y):
+        """特徴量選択"""
+        logger.info(" 最適な特徴量の選択...")
         
-        selector = SelectKBest(score_func=f_classif, k=k)
-        X_selected = selector.fit_transform(X, y)
+        # Train a model for feature selection
+        rf = RandomForestClassifier(n_estimators=100, random_state=42)
+        rf.fit(X, y)
+        
+        # Select important features
+        selector = SelectFromModel(rf, threshold='median')
+        selector.fit(X, y)
         
         # Get selected feature names
-        feature_mask = selector.get_support()
-        selected_features = [X.columns[i] for i in range(len(X.columns)) if feature_mask[i]]
+        selected_features = X.columns[selector.get_support()]
         
-        logger.info(f"✅ Selected features: {selected_features}")
+        # Get importance scores
+        importances = rf.feature_importances_
+        feature_importances = pd.DataFrame({
+            '特徴量': X.columns,
+            '重要度': importances
+        }).sort_values('重要度', ascending=False)
         
-        return pd.DataFrame(X_selected, columns=selected_features), selected_features
+        logger.info(f" 選択された特徴量: {len(selected_features)}/{X.shape[1]}")
+        logger.info(f" トップ5特徴量: {', '.join(feature_importances['特徴量'].head(5))}")
+        
+        self.feature_importances = feature_importances
+        self.selected_features = selected_features
+        
+        return X[selected_features], selected_features
     
-    def optimize_xgboost_hyperparameters(self, X, y):
-        """Optimize XGBoost hyperparameters using GridSearchCV."""
-        logger.info("🔧 Optimizing XGBoost hyperparameters...")
+    def handle_imbalance(self, X, y):
+        """不均衡データの処理"""
+        logger.info(" 不均衡データの処理...")
         
-        # Define parameter grid
-        param_grid = {
-            'n_estimators': [100, 200, 300],
-            'max_depth': [3, 4, 5, 6],
-            'learning_rate': [0.01, 0.1, 0.2],
-            'subsample': [0.8, 0.9, 1.0],
-            'colsample_bytree': [0.8, 0.9, 1.0],
-            'reg_alpha': [0, 0.1, 0.5],
-            'reg_lambda': [1, 1.5, 2]
-        }
+        # Check class distribution
+        class_counts = pd.Series(y).value_counts()
+        logger.info(f" クラス分布: {class_counts.to_dict()}")
         
-        # Use smaller grid for faster execution
-        quick_param_grid = {
-            'n_estimators': [200, 300],
-            'max_depth': [4, 6],
-            'learning_rate': [0.1, 0.2],
-            'subsample': [0.8, 1.0],
-            'colsample_bytree': [0.8, 1.0]
-        }
-        
-        xgb_model = xgb.XGBClassifier(
-            random_state=42,
-            use_label_encoder=False,
-            eval_metric='logloss'
-        )
-        
-        # Use stratified k-fold for imbalanced dataset
-        cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
-        
-        grid_search = GridSearchCV(
-            estimator=xgb_model,
-            param_grid=quick_param_grid,
-            scoring='roc_auc',
-            cv=cv,
-            n_jobs=-1,
-            verbose=1
-        )
-        
-        grid_search.fit(X, y)
-        
-        logger.info(f"🎯 Best ROC AUC: {grid_search.best_score_:.4f}")
-        logger.info(f"🔧 Best parameters: {grid_search.best_params_}")
-        
-        return grid_search.best_estimator_, grid_search.best_score_, grid_search.best_params_
-    
-    def try_alternative_algorithms(self, X, y):
-        """Try alternative machine learning algorithms."""
-        logger.info("🔄 Testing alternative algorithms...")
-        
-        algorithms = {
-            'Random Forest': RandomForestClassifier(
-                n_estimators=200,
-                max_depth=6,
-                random_state=42,
-                class_weight='balanced'
-            ),
-            'XGBoost Balanced': xgb.XGBClassifier(
-                n_estimators=200,
-                max_depth=6,
-                learning_rate=0.1,
-                scale_pos_weight=4.75,  # ratio of negative to positive samples
-                random_state=42,
-                use_label_encoder=False,
-                eval_metric='logloss'
-            )
-        }
-        
-        results = {}
-        cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-        
-        for name, model in algorithms.items():
-            # Cross-validation scores
-            from sklearn.model_selection import cross_val_score
-            cv_scores = cross_val_score(model, X, y, cv=cv, scoring='roc_auc')
-            
-            # Fit and predict for detailed metrics
-            model.fit(X, y)
-            y_pred = model.predict(X)
-            y_proba = model.predict_proba(X)[:, 1]
-            
-            roc_auc = roc_auc_score(y, y_proba)
-            
-            results[name] = {
-                'model': model,
-                'cv_mean': cv_scores.mean(),
-                'cv_std': cv_scores.std(),
-                'roc_auc': roc_auc,
-                'cv_scores': cv_scores
-            }
-            
-            logger.info(f"📊 {name}: ROC AUC = {roc_auc:.4f} (CV: {cv_scores.mean():.4f} ± {cv_scores.std():.4f})")
-        
-        return results
-    
-    def run_complete_optimization(self):
-        """Run the complete optimization pipeline."""
-        logger.info("🚀 Starting Model Optimization Pipeline")
-        logger.info("=" * 60)
-        
-        # 1. Load and prepare data
-        X, y = self.load_and_prepare_data()
-        original_X, original_y = X.copy(), y.copy()
-        
-        results = {}
-        
-        # 2. Baseline model (current)
-        logger.info("\n📊 BASELINE MODEL PERFORMANCE")
-        logger.info("-" * 40)
-        
-        baseline_model = xgb.XGBClassifier(random_state=42, use_label_encoder=False, eval_metric='logloss')
-        baseline_model.fit(X, y)
-        baseline_proba = baseline_model.predict_proba(X)[:, 1]
-        baseline_roc = roc_auc_score(y, baseline_proba)
-        
-        results['baseline'] = {
-            'model': baseline_model,
-            'roc_auc': baseline_roc,
-            'description': 'Original XGBoost model'
-        }
-        
-        logger.info(f"📈 Baseline ROC AUC: {baseline_roc:.4f}")
-        
-        # 3. Feature selection optimization
-        logger.info("\n🎯 FEATURE SELECTION OPTIMIZATION")
-        logger.info("-" * 40)
-        
-        X_selected, selected_features = self.feature_selection(X, y, k=15)
-        
-        fs_model = xgb.XGBClassifier(random_state=42, use_label_encoder=False, eval_metric='logloss')
-        fs_model.fit(X_selected, y)
-        fs_proba = fs_model.predict_proba(X_selected)[:, 1]
-        fs_roc = roc_auc_score(y, fs_proba)
-        
-        results['feature_selection'] = {
-            'model': fs_model,
-            'roc_auc': fs_roc,
-            'features': selected_features,
-            'description': f'XGBoost with top {len(selected_features)} features'
-        }
-        
-        logger.info(f"📈 Feature Selection ROC AUC: {fs_roc:.4f}")
-        
-        # 4. SMOTE balancing
-        logger.info("\n⚖️ SMOTE BALANCING OPTIMIZATION")
-        logger.info("-" * 40)
-        
-        X_balanced, y_balanced = self.apply_smote_balancing(X, y)
-        
-        smote_model = xgb.XGBClassifier(random_state=42, use_label_encoder=False, eval_metric='logloss')
-        smote_model.fit(X_balanced, y_balanced)
-        smote_proba = smote_model.predict_proba(X)[:, 1]  # Predict on original data
-        smote_roc = roc_auc_score(y, smote_proba)
-        
-        results['smote'] = {
-            'model': smote_model,
-            'roc_auc': smote_roc,
-            'description': 'XGBoost with SMOTE balancing'
-        }
-        
-        logger.info(f"📈 SMOTE ROC AUC: {smote_roc:.4f}")
-        
-        # 5. Hyperparameter optimization
-        logger.info("\n🔧 HYPERPARAMETER OPTIMIZATION")
-        logger.info("-" * 40)
+        # Apply SMOTE if imbalanced
+        min_samples = class_counts.min()
+        if min_samples < 10:
+            logger.warning(f" サンプルが少なすぎるため、SMOTEをスキップします ({min_samples})")
+            return X, y
         
         try:
-            best_model, best_score, best_params = self.optimize_xgboost_hyperparameters(X, y)
+            smote = SMOTE(random_state=42)
+            X_resampled, y_resampled = smote.fit_resample(X, y)
             
-            results['hyperparameter_tuned'] = {
-                'model': best_model,
-                'roc_auc': best_score,
-                'params': best_params,
-                'description': 'XGBoost with optimized hyperparameters'
-            }
+            logger.info(f" SMOTE適用後: {pd.Series(y_resampled).value_counts().to_dict()}")
+            return X_resampled, y_resampled
             
-            logger.info(f"📈 Hyperparameter Tuned ROC AUC: {best_score:.4f}")
         except Exception as e:
-            logger.warning(f"⚠️ Hyperparameter optimization failed: {e}")
+            logger.error(f" SMOTE適用エラー: {e}")
+            return X, y
+    
+    def optimize_xgboost(self, X, y):
+        """XGBoostモデルの最適化"""
+        logger.info(" XGBoostモデルのパラメータ最適化...")
         
-        # 6. Alternative algorithms
-        logger.info("\n🔄 ALTERNATIVE ALGORITHMS")
-        logger.info("-" * 40)
-        
-        alt_results = self.try_alternative_algorithms(X, y)
-        results.update(alt_results)
-        
-        # 7. Combined approach (SMOTE + Feature Selection)
-        logger.info("\n🚀 COMBINED OPTIMIZATION")
-        logger.info("-" * 40)
-        
-        X_balanced_selected, _ = self.feature_selection(
-            pd.DataFrame(X_balanced, columns=X.columns), 
-            y_balanced, 
-            k=15
+        # Split data
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.2, random_state=42, stratify=y
         )
         
-        combined_model = xgb.XGBClassifier(
-            n_estimators=200,
-            max_depth=6,
-            learning_rate=0.1,
-            random_state=42,
-            use_label_encoder=False,
-            eval_metric='logloss'
-        )
-        combined_model.fit(X_balanced_selected, y_balanced)
-        
-        # Predict on original data with selected features
-        X_original_selected = X[X_balanced_selected.columns]
-        combined_proba = combined_model.predict_proba(X_original_selected)[:, 1]
-        combined_roc = roc_auc_score(y, combined_proba)
-        
-        results['combined'] = {
-            'model': combined_model,
-            'roc_auc': combined_roc,
-            'description': 'SMOTE + Feature Selection + XGBoost'
+        # Parameter grid
+        param_grid = {
+            'n_estimators': [50, 100, 200],
+            'max_depth': [3, 5, 7],
+            'learning_rate': [0.01, 0.1, 0.2],
+            'subsample': [0.8, 1.0],
+            'colsample_bytree': [0.8, 1.0],
+            'min_child_weight': [1, 3]
         }
         
-        logger.info(f"📈 Combined Approach ROC AUC: {combined_roc:.4f}")
+        # Use smaller grid for small datasets
+        if X.shape[0] < 100:
+            logger.info(" 小規模データセットのため、簡易グリッドを使用")
+            param_grid = {
+                'n_estimators': [50, 100],
+                'max_depth': [3, 5],
+                'learning_rate': [0.1]
+            }
         
-        # Summary
-        logger.info("\n" + "=" * 60)
-        logger.info("🏆 OPTIMIZATION RESULTS SUMMARY")
-        logger.info("=" * 60)
+        # Grid search with cross-validation
+        xgb_model = xgb.XGBClassifier(objective='binary:logistic', random_state=42)
+        grid_search = GridSearchCV(
+            xgb_model, param_grid, cv=5, scoring='roc_auc', n_jobs=-1, verbose=0
+        )
         
-        sorted_results = sorted(results.items(), key=lambda x: x[1]['roc_auc'], reverse=True)
+        try:
+            grid_search.fit(X_train, y_train)
+            
+            # Get best parameters
+            best_params = grid_search.best_params_
+            logger.info(f" 最適パラメータ: {best_params}")
+            
+            # Train with best parameters
+            best_model = xgb.XGBClassifier(
+                objective='binary:logistic', 
+                random_state=42,
+                **best_params
+            )
+            best_model.fit(X_train, y_train)
+            
+            # Evaluate
+            y_pred_proba = best_model.predict_proba(X_test)[:, 1]
+            auc = roc_auc_score(y_test, y_pred_proba)
+            
+            logger.info(f" 最適化後AUC: {auc:.4f}")
+            
+            self.best_model = best_model
+            self.best_params = best_params
+            self.optimized_auc = auc
+            
+            return best_model, best_params, auc
+            
+        except Exception as e:
+            logger.error(f" XGBoost最適化エラー: {e}")
+            
+            # Fallback to simpler model
+            logger.info(" 簡易XGBoostモデルにフォールバック")
+            simple_model = xgb.XGBClassifier(
+                n_estimators=50, max_depth=3, learning_rate=0.1, random_state=42
+            )
+            simple_model.fit(X_train, y_train)
+            
+            y_pred_proba = simple_model.predict_proba(X_test)[:, 1]
+            auc = roc_auc_score(y_test, y_pred_proba)
+            
+            logger.info(f" フォールバックモデルAUC: {auc:.4f}")
+            
+            self.best_model = simple_model
+            self.best_params = {
+                'n_estimators': 50, 
+                'max_depth': 3, 
+                'learning_rate': 0.1
+            }
+            self.optimized_auc = auc
+            
+            return simple_model, self.best_params, auc
+    
+    def compare_algorithms(self, X, y):
+        """複数のアルゴリズムの比較"""
+        logger.info(" 複数のアルゴリズムを比較...")
         
-        for i, (name, result) in enumerate(sorted_results, 1):
-            logger.info(f"{i}. {name:20s}: ROC AUC = {result['roc_auc']:.4f} - {result['description']}")
+        # Split data
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.2, random_state=42, stratify=y
+        )
+        
+        # Define models to compare
+        models = {
+            'RandomForest': RandomForestClassifier(n_estimators=100, random_state=42),
+            'XGBoost': xgb.XGBClassifier(n_estimators=100, random_state=42)
+        }
+        
+        results = {}
+        
+        for name, model in models.items():
+            try:
+                # Train model
+                model.fit(X_train, y_train)
+                
+                # Evaluate
+                y_pred_proba = model.predict_proba(X_test)[:, 1]
+                auc = roc_auc_score(y_test, y_pred_proba)
+                
+                results[name] = auc
+                logger.info(f" {name} AUC: {auc:.4f}")
+                
+            except Exception as e:
+                logger.error(f" {name}モデルエラー: {e}")
+                results[name] = 0
         
         # Find best model
-        best_approach = sorted_results[0]
-        self.best_model = best_approach[1]['model']
-        self.best_score = best_approach[1]['roc_auc']
+        best_algo = max(results, key=results.get)
+        logger.info(f" 最高性能アルゴリズム: {best_algo} (AUC: {results[best_algo]:.4f})")
         
-        logger.info(f"\n🎯 Best approach: {best_approach[0]} with ROC AUC = {self.best_score:.4f}")
-        
-        improvement = ((self.best_score - baseline_roc) / baseline_roc) * 100
-        logger.info(f"📈 Improvement over baseline: {improvement:+.2f}%")
-        
-        self.optimization_results = results
         return results
+    
+    def generate_model_report(self, X, y):
+        """モデルレポートの生成"""
+        logger.info(" モデルレポートの生成...")
+        
+        if self.best_model is None:
+            logger.error(" 最適化されたモデルがありません")
+            return None
+        
+        # Split data
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.2, random_state=42, stratify=y
+        )
+        
+        # Train model on this split
+        self.best_model.fit(X_train, y_train)
+        
+        # Predictions
+        y_pred = self.best_model.predict(X_test)
+        y_pred_proba = self.best_model.predict_proba(X_test)[:, 1]
+        
+        # Metrics
+        auc = roc_auc_score(y_test, y_pred_proba)
+        cm = confusion_matrix(y_test, y_pred)
+        report = classification_report(y_test, y_pred)
+        
+        # Log results
+        logger.info(f" テストセットAUC: {auc:.4f}")
+        logger.info(f" 混同行列:\n{cm}")
+        logger.info(f" 分類レポート:\n{report}")
+        
+        # Save results
+        results = {
+            'auc': auc,
+            'confusion_matrix': cm.tolist(),
+            'classification_report': report,
+            'feature_importances': self.feature_importances.to_dict() if self.feature_importances is not None else None,
+            'best_params': self.best_params,
+            'baseline_auc': self.baseline_auc,
+            'optimized_auc': self.optimized_auc,
+            'improvement': (self.optimized_auc - self.baseline_auc) if self.baseline_auc and self.optimized_auc else None
+        }
+        
+        # Create output directory if it doesn't exist
+        os.makedirs('outputs', exist_ok=True)
+        
+        # Save report as JSON
+        report_path = os.path.join('outputs', 'model_report.json')
+        with open(report_path, 'w') as f:
+            import json
+            json.dump(results, f, indent=4)
+        
+        logger.info(f" モデルレポート保存先: {report_path}")
+        
+        # Create visualizations
+        self.create_visualizations(X, y, X_test, y_test, y_pred_proba)
+        
+        return results
+    
+    def create_visualizations(self, X, y, X_test, y_test, y_pred_proba):
+        """可視化の作成"""
+        logger.info(" モデル性能の可視化...")
+        
+        # Create output directory for plots
+        plots_dir = os.path.join('outputs', 'plots')
+        os.makedirs(plots_dir, exist_ok=True)
+        
+        try:
+            # 1. Feature Importance
+            if self.feature_importances is not None:
+                plt.figure(figsize=(10, 6))
+                top_features = self.feature_importances.head(10)
+                sns.barplot(x='重要度', y='特徴量', data=top_features)
+                plt.title('特徴量重要度 (トップ10)')
+                plt.tight_layout()
+                plt.savefig(os.path.join(plots_dir, 'feature_importance.png'))
+                plt.close()
+            
+            # 2. ROC Curve
+            from sklearn.metrics import roc_curve
+            plt.figure(figsize=(8, 6))
+            fpr, tpr, _ = roc_curve(y_test, y_pred_proba)
+            plt.plot(fpr, tpr, label=f'AUC = {self.optimized_auc:.4f}')
+            plt.plot([0, 1], [0, 1], 'k--')
+            plt.xlabel('偽陽性率')
+            plt.ylabel('真陽性率')
+            plt.title('ROC曲線')
+            plt.legend()
+            plt.savefig(os.path.join(plots_dir, 'roc_curve.png'))
+            plt.close()
+            
+            # 3. Confusion Matrix Heatmap
+            cm = confusion_matrix(y_test, (y_pred_proba > 0.5).astype(int))
+            plt.figure(figsize=(8, 6))
+            sns.heatmap(cm, annot=True, fmt='d', cmap='Blues')
+            plt.xlabel('予測ラベル')
+            plt.ylabel('実際のラベル')
+            plt.title('混同行列')
+            plt.savefig(os.path.join(plots_dir, 'confusion_matrix.png'))
+            plt.close()
+            
+            # 4. Baseline vs Optimized Comparison
+            if self.baseline_auc and self.optimized_auc:
+                plt.figure(figsize=(8, 6))
+                models = ['ベースライン', '最適化後']
+                aucs = [self.baseline_auc, self.optimized_auc]
+                improvement = ((self.optimized_auc - self.baseline_auc) / self.baseline_auc) * 100
+                
+                sns.barplot(x=models, y=aucs)
+                plt.title(f'モデル性能改善 (+{improvement:.2f}%)')
+                plt.xlabel('モデル')
+                plt.ylabel('AUC スコア')
+                plt.ylim(0.5, 1.0)
+                
+                for i, auc in enumerate(aucs):
+                    plt.text(i, auc + 0.01, f'{auc:.4f}', ha='center')
+                    
+                plt.savefig(os.path.join(plots_dir, 'model_improvement.png'))
+                plt.close()
+            
+            logger.info(f" 可視化を保存しました: {plots_dir}")
+            
+        except Exception as e:
+            logger.error(f" 可視化作成エラー: {e}")
+    
+    def save_model(self):
+        """最適化されたモデルの保存"""
+        if self.best_model is None:
+            logger.error(" 保存するモデルがありません")
+            return None
+        
+        # Create output directory if it doesn't exist
+        os.makedirs('models', exist_ok=True)
+        
+        # Generate timestamp
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        
+        # Save model
+        model_path = os.path.join('models', f'optimized_model_{timestamp}.pkl')
+        import joblib
+        joblib.dump(self.best_model, model_path)
+        
+        # Also save as latest model
+        latest_path = os.path.join('models', 'optimized_model_latest.pkl')
+        joblib.dump(self.best_model, latest_path)
+        
+        logger.info(f" モデルを保存しました: {model_path}")
+        logger.info(f" 最新モデル: {latest_path}")
+        
+        return model_path
+    
+    def run_complete_optimization(self):
+        """最適化パイプライン全体の実行"""
+        logger.info(" モデル最適化パイプラインを開始...")
+        
+        try:
+            # Step 1: Load and prepare data
+            X, y = self.load_and_prepare_data()
+            
+            # Step 2: Evaluate baseline model
+            baseline_model, baseline_auc = self.evaluate_baseline_model(X, y)
+            
+            # Step 3: Select important features
+            X_selected, selected_features = self.select_features(X, y)
+            
+            # Step 4: Handle class imbalance
+            X_balanced, y_balanced = self.handle_imbalance(X_selected, y)
+            
+            # Step 5: Optimize XGBoost
+            best_model, best_params, opt_auc = self.optimize_xgboost(X_balanced, y_balanced)
+            
+            # Step 6: Compare algorithms
+            algo_comparison = self.compare_algorithms(X_balanced, y_balanced)
+            
+            # Step 7: Generate report
+            report = self.generate_model_report(X_balanced, y_balanced)
+            
+            # Step 8: Save model
+            model_path = self.save_model()
+            
+            # Results summary
+            improvement = ((opt_auc - baseline_auc) / baseline_auc) * 100
+            
+            logger.info("=" * 50)
+            logger.info(" モデル最適化完了!")
+            logger.info(f" AUC改善: {baseline_auc:.4f}  {opt_auc:.4f} (+{improvement:.2f}%)")
+            logger.info(f" 特徴量削減: {X.shape[1]}  {X_selected.shape[1]}")
+            logger.info(f" 選択された特徴量: {len(selected_features)}")
+            logger.info(f" モデル保存先: {model_path}")
+            logger.info("=" * 50)
+            
+            return {
+                'baseline_auc': baseline_auc,
+                'optimized_auc': opt_auc,
+                'improvement': improvement,
+                'selected_features': selected_features.tolist(),
+                'best_params': best_params,
+                'model_path': model_path
+            }
+            
+        except Exception as e:
+            logger.error(f" 最適化パイプラインエラー: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return None
 
 def main():
-    """Main execution function."""
+    """メイン関数"""
+    logger.info(" モデル最適化パイプラインを開始")
+    logger.info("=" * 60)
+    
     optimizer = ModelOptimizer()
     results = optimizer.run_complete_optimization()
     
-    print("\n" + "="*60)
-    print("✅ MODEL OPTIMIZATION COMPLETED")
-    print("="*60)
-    print(f"📊 Best ROC AUC achieved: {optimizer.best_score:.4f}")
-    print("📁 Check logs above for detailed analysis")
-    print("💡 Consider implementing the best performing approach in your main pipeline")
+    if results:
+        logger.info(" 最適化完了")
+    else:
+        logger.error(" 最適化に失敗しました")
+    
+    return results
 
 if __name__ == "__main__":
     main()
