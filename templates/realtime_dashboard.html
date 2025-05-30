@@ -346,6 +346,18 @@
             50% { opacity: 0.5; }
             100% { opacity: 1; }
         }
+        
+        .status-notification {
+            position: fixed;
+            bottom: 10px;
+            right: 10px;
+            padding: 8px 12px;
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            border-radius: 4px;
+            z-index: 1000;
+            display: none;
+        }
     </style>
 </head>
 <body>
@@ -484,6 +496,19 @@
     </div>
 
     <script>
+        // Add this debounce function at the top of your script
+        function debounce(func, wait) {
+            let timeout;
+            return function() {
+                const context = this;
+                const args = arguments;
+                clearTimeout(timeout);
+                timeout = setTimeout(() => {
+                    func.apply(context, args);
+                }, wait);
+            };
+        }
+        
         // Global variables
         let socket;
         let currentCallId = null;
@@ -528,26 +553,59 @@
             socket.on('joined', function(data) {
                 showAlert(`Joined agent room: ${data.agent_id}`, 'info');
             });
+
+            // Create a status notification area if it doesn't exist
+            const statusArea = document.createElement('div');
+            statusArea.id = 'connection-status';
+            statusArea.className = 'status-notification';
+            statusArea.style.position = 'fixed';
+            statusArea.style.bottom = '10px';
+            statusArea.style.right = '10px';
+            statusArea.style.padding = '8px 12px';
+            statusArea.style.background = 'rgba(0,0,0,0.7)';
+            statusArea.style.color = 'white';
+            statusArea.style.borderRadius = '4px';
+            statusArea.style.zIndex = '1000';
+            statusArea.style.display = 'none';
+            document.body.appendChild(statusArea);
+            
+            // Replace the existing status event handler
+            socket.on('status', function(data) {
+                // Update the status area instead of showing an alert
+                statusArea.textContent = data.message;
+                statusArea.style.display = 'block';
+                
+                // Hide after 3 seconds
+                setTimeout(() => {
+                    statusArea.style.display = 'none';
+                }, 3000);
+            });
         }
 
         function setupEventHandlers() {
             $('#start-call-btn').click(startCall);
             $('#end-call-btn').click(endCall);
             
-            $('#agent-id-input').on('input', function() {
+            $('#agent-id-input').on('input', debounce(function() {
                 agentId = $(this).val();
                 $('#agent-id').text(agentId || '-');
                 
                 if (agentId && socket) {
                     socket.emit('join_agent', { agent_id: agentId });
                 }
-            });
+            }, 500)); // 500ms debounce
 
-            $('#call-id-input').on('input', function() {
-                if (!$(this).val()) {
-                    $(this).val(generateCallId());
+            $('#call-id-input').on('input', debounce(function() {
+                const callId = $(this).val().trim();
+                const agentId = $('#agent-id-input').val().trim();
+                
+                if (callId && agentId) {
+                    socket.emit('join_call', {
+                        agent_id: agentId,
+                        call_id: callId
+                    });
                 }
-            });
+            }, 500)); // 500ms debounce
         }
 
         function startCall() {

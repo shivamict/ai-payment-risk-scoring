@@ -533,6 +533,33 @@ def handle_disconnect():
             del active_agents[agent_id]
             break
 
+# Replace the existing join_call handler with this improved version:
+@socketio.on('join_call')
+def handle_join_call(data):
+    """通話ルームに参加 (デバウンス処理付き)"""
+    call_id = data.get('call_id')
+    agent_id = data.get('agent_id')
+    
+    if not call_id or not agent_id:
+        return
+    
+    # Store the agent's current room to avoid multiple joins
+    session_id = request.sid
+    current_room = session.get(f"{session_id}_room", None)
+    
+    # Only join if this is a new room or a different room
+    if current_room != f"agent_{agent_id}":
+        # Leave previous room if exists
+        if current_room:
+            leave_room(current_room)
+            
+        # Join new room
+        join_room(f"agent_{agent_id}")
+        session[f"{session_id}_room"] = f"agent_{agent_id}"
+        
+        # Only emit once when actually joining
+        emit('status', {'message': f'エージェント {agent_id} として接続しました'})
+
 # Background task for continuous scoring
 def background_scoring():
     """Background task to continuously score active calls"""
